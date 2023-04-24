@@ -1,5 +1,5 @@
 /*
-A small IMU
+A small IMU reading application
 
 Project based off of walkthrough found here:
 https://learn.adafruit.com/adafruit-bno055-absolute-orientation-sensor
@@ -8,75 +8,169 @@ Author: Niko Tubach
 Class: EN.605.715.81
 */
 
-// Pin used to trigger the digital interrupt
-const uint32_t DIO_INT_PIN = 2;
-// Pin for the IR LED
-const uint32_t IR_LED_PIN = 13;
-// The number of blades on prop, adjusts math for RPM
-const uint32_t BLADE_NUM = 2;
-// Transistory storage for number of ir breaks we see
-volatile uint32_t prop_count = 0;
-// Storage for time
-uint32_t time = 0;
-// Time elapse value for rpm count
-uint32_t timeold = 0;
-// Storage for the rpm seen
-unsigned int rpm = 0;
-// Debouncer helper
-uint32_t last_interrupt_time = 0;
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BNO055.h>
+#include <utility/imumaths.h>
 
-void setup()
+/* Set the delay between fresh samples */
+#define BNO055_SAMPLERATE_DELAY_MS (100)
+
+// Check I2C device address and correct line below (by default address is 0x29 or 0x28)
+//                                   id, address
+Adafruit_BNO055 bno = Adafruit_BNO055(55, 0x28);
+
+/**************************************************************************/
+/*
+    Arduino setup function (automatically called at startup)
+*/
+/**************************************************************************/
+void setup(void)
 {
-  Serial.begin(9600);
-  // Setup headers for data
-  Serial.println("Time (s),RPM");
-  // Attach our ISR to the Vout of the photo-receiver to trigger when it goes low
-  attachInterrupt(digitalPinToInterrupt(DIO_INT_PIN), prop_count_isr, FALLING);
-  // Turn on the IR LED permanently
-  pinMode(IR_LED_PIN, OUTPUT);
-  digitalWrite(IR_LED_PIN, HIGH);
-}
-
-void loop()
-{
-  // Update each second after readings
-  delay(1000);
-
-  // Prevent interrupts while we print out
-  noInterrupts();
-
-  // Calculate the RPM, adjust for blade count
-  rpm = (60 / BLADE_NUM) * 1000 / (millis() - timeold) * prop_count;
-  // Update time for next cycle
-  timeold = millis();
-  // Check time for output
-  time = timeold / 1000;
-
-  // Print out current time , rpm reading
-  Serial.print(time);
-  Serial.print(" , ");
-  Serial.println(rpm);
-
-  // Reset counters
-  prop_count = 0;
-  rpm = 0;
-
-  // Re-enable Interrupts
-  interrupts();
-}
-
-void prop_count_isr()
-{
-  // Update our counter
-  // prop_count++;
-  uint32_t interrupt_time = millis();
-
-  // Debouncing idea from Kevin
-  // If interrupts come faster than 1ms, assume it's a bounce and ignore
-  if (interrupt_time - last_interrupt_time > 1)
+  Serial.begin(115200);
+  while (!Serial)
   {
-    prop_count++;
+    ; // wait for serial port to connect. Needed for native USB, on LEONARDO, MICRO, YUN, and other 32u4 based boards.
   }
 
-  last_interrupt_time = interrupt_time;
+  /* Initialise the sensor */
+  if (!bno.begin())
+  {
+    /* There was a problem detecting the BNO055 ... check your connections */
+    Serial.print("Ooops, no BNO055 detected ... Check your wiring or I2C ADDR!");
+    while (1)
+      ;
+  }
+  delay(1000);
+
+  // Use external crystal for better accuracy
+  bno.setExtCrystalUse(true);
+
+  /* Display some basic information on this sensor */
+  displaySensorDetails();
+}
+
+void loop(void)
+{
+  /* Board layout:
+        +----------+
+        |         *| RST   PITCH  ROLL  HEADING
+    ADR |*        *| SCL
+    INT |*        *| SDA     ^            /->
+    PS1 |*        *| GND     |            |
+    PS0 |*        *| 3VO     Y    Z-->    \-X
+        |         *| VIN
+        +----------+
+  */
+
+  /* Get a new sensor event */
+  sensors_event_t event;
+  bno.getEvent(&event);
+
+  /* Display the floating point data */
+  Serial.print("X: ");
+  Serial.print(event.orientation.x, 4);
+  Serial.print("\tY: ");
+  Serial.print(event.orientation.y, 4);
+  Serial.print("\tZ: ");
+  Serial.print(event.orientation.z, 4);
+
+  /* Optional: Display calibration status */
+  displayCalStatus();
+
+  /* Optional: Display sensor status (debug only) */
+  // displaySensorStatus();
+
+  /* New line for the next sample */
+  Serial.println("");
+
+  /* Wait the specified delay before requesting next data */
+  delay(BNO055_SAMPLERATE_DELAY_MS);
+}
+
+/**************************************************************************/
+/*
+    Displays some basic information on this sensor from the unified
+    sensor API sensor_t type (see Adafruit_Sensor for more information)
+*/
+/**************************************************************************/
+void displaySensorDetails(void)
+{
+  sensor_t sensor;
+  bno.getSensor(&sensor);
+  Serial.println("------------------------------------");
+  Serial.print("Sensor:       ");
+  Serial.println(sensor.name);
+  Serial.print("Driver Ver:   ");
+  Serial.println(sensor.version);
+  Serial.print("Unique ID:    ");
+  Serial.println(sensor.sensor_id);
+  Serial.print("Max Value:    ");
+  Serial.print(sensor.max_value);
+  Serial.println(" xxx");
+  Serial.print("Min Value:    ");
+  Serial.print(sensor.min_value);
+  Serial.println(" xxx");
+  Serial.print("Resolution:   ");
+  Serial.print(sensor.resolution);
+  Serial.println(" xxx");
+  Serial.println("------------------------------------");
+  Serial.println("");
+  delay(500);
+}
+
+/**************************************************************************/
+/*
+    Display some basic info about the sensor status
+*/
+/**************************************************************************/
+void displaySensorStatus(void)
+{
+  /* Get the system status values (mostly for debugging purposes) */
+  uint8_t system_status, self_test_results, system_error;
+  system_status = self_test_results = system_error = 0;
+  bno.getSystemStatus(&system_status, &self_test_results, &system_error);
+
+  /* Display the results in the Serial Monitor */
+  Serial.println("");
+  Serial.print("System Status: 0x");
+  Serial.println(system_status, HEX);
+  Serial.print("Self Test:     0x");
+  Serial.println(self_test_results, HEX);
+  Serial.print("System Error:  0x");
+  Serial.println(system_error, HEX);
+  Serial.println("");
+  delay(500);
+}
+
+/**************************************************************************/
+/*
+    Display sensor calibration status
+*/
+/**************************************************************************/
+void displayCalStatus(void)
+{
+  /* Get the four calibration values (0..3) */
+  /* Any sensor data reporting 0 should be ignored, */
+  /* 3 means 'fully calibrated" */
+  uint8_t system, gyro, accel, mag;
+  system = gyro = accel = mag = 0;
+  bno.getCalibration(&system, &gyro, &accel, &mag);
+
+  /* The data should be ignored until the system calibration is > 0 */
+  Serial.print("\t");
+  if (!system)
+  {
+    Serial.print("! ");
+  }
+
+  /* Display the individual values */
+  Serial.print("Sys:");
+  Serial.print(system, DEC);
+  Serial.print(" G:");
+  Serial.print(gyro, DEC);
+  Serial.print(" A:");
+  Serial.print(accel, DEC);
+  Serial.print(" M:");
+  Serial.print(mag, DEC);
 }
